@@ -17,10 +17,10 @@ The reference model part is decoupled, which allows it to be run on different GP
 ### 💃 Performance
 Training completed in under 1 hour on 1*A800 GPUs. Both Qwen2.5-7B and Qwen2.5-3B exhibited an "Aha moment" within the first 30 optimization steps.
 
-### Core Loss Calculation
+### 🥳 Core Loss Calculation
 The loss calculation formula is based on Hugging Face's trl. We extend our gratitude to Hugging Face for their contribution.
 
-## 🍺 Environment
+## 🙌 Environment
 The runtime environment is depicted below:
 ```
 >> ds_report
