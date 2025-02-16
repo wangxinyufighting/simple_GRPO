@@ -53,38 +53,41 @@ All parameters are in the code. We need to try more possibilities than a fking l
 
 ## ✨ Experimental Results
 
-### Runtime Environment
-- **Hardware Setup**: 2×A800 (80GB) GPUs
-- **Configuration**:
+1. Runtime Environment
+- Hardware Setup: 2×A800 (80GB) GPUs
+- Configuration:
   - Training: 1 GPU with Zero-Stage 2 optimization
   - Inference: Dedicated 1 GPU (3090/4090 compatible)
 
-## Training Performance
+2. Training Performance
+   
 | Model        | Steps | Time       |
 |--------------|-------|------------|
 | Qwen2.5-3B   | 60    | 12m 34s    |
 | Qwen2.5-7B   | 60    | 16m 40s    |
 
-### Qwen2.5-3B
-<img src="https://github.com/lsdefine/simple_GRPO/blob/main/images/Qwen2dot5-3B-res.jpg" alt="Qwen2.5-3B Accuracy" width="45%" style="display: inline-block; margin-right: 5px;">  
+2.1 Qwen2.5-3B
 
-- **Accuracy**:
+<img src="https://github.com/lsdefine/simple_GRPO/blob/main/images/Qwen2dot5-3B-res.jpg" alt="Qwen2.5-3B Accuracy" width="70%" style="display: inline-block; margin-right: 5px;">  
+
+- Accuracy:
   - Stabilizes above 60% after 5 optimization steps
   - Peaks at ~70%
-- **Format Compliance**:
+- Format Compliance:
   - Reaches ≈100% after 30 steps
 
-### Qwen2.5-7B
-<img src="https://github.com/lsdefine/simple_GRPO/blob/main/images/Qwen2dot5-7B-res.jpg" alt="Qwen2.5-3B Accuracy" width="45%" style="display: inline-block; margin-right: 5px;">  
+2.2 Qwen2.5-7B
 
-- **Accuracy**:
+<img src="https://github.com/lsdefine/simple_GRPO/blob/main/images/Qwen2dot5-7B-res.jpg" alt="Qwen2.5-3B Accuracy" width="70%" style="display: inline-block; margin-right: 5px;">  
+
+- Accuracy:
   - Maintains >90% throughout training
-- **Format Compliance**:
+- Format Compliance:
   - Achieves 100% within 30 steps
-- **Convergence**: Both metrics show rapid convergence
+- Convergence: Both metrics show rapid convergence
 
 ## Aha Moment
-### Qwen2.5-3B (Step 20)
+1. Qwen2.5-3B (Step 20)
 > `<think>`
 > ...
 > To find out how many more eggs Camden painted than Arnold,  we subtract the number of eggs painted by Arnold from the number of eggs painted by Camden. So, 21 - 28 = -7.  **However, this result doesn't make sense in the context of the problem,
@@ -95,7 +98,7 @@ All parameters are in the code. We need to try more possibilities than a fking l
 > `</think>`
 > `<answer>`-7`</answer>`
 
-### Qwen2.5-7B (Step 20)
+2. Qwen2.5-7B (Step 20)
 
 > `<think>`
 > ...
