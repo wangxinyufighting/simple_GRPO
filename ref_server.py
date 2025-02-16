@@ -35,9 +35,8 @@ if __name__ == '__main__':
     from bottle import request
     import bottle, threading, queue
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
-    #os.environ['CUDA_VISIBLE_DEVICES'] = '7'
 
-    model_path = "/data2/Qwen/Qwen2.5-7B-Instruct"
+    model_path = "/data2/Qwen/Qwen2.5-7B"
 
     ref_model = AutoModelForCausalLM.from_pretrained(model_path,
             torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')

@@ -6,12 +6,13 @@ import numpy as np
 import torch.distributed as dist
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-model_path = "/data2/Qwen/Qwen2.5-7B-Instruct"
-#model_path = "step_200"
-beta = 0.04
+model_path = "/data2/Qwen/Qwen2.5-7B"
+beta = 0.03
 num_pre_Q = 8
 Q_batch_size = 1
 all_steps = 1000
+max_prompt_length = 400   
+save_steps = 200
 
 ds_config = {
     "train_micro_batch_size_per_gpu": Q_batch_size*num_pre_Q,
@@ -55,46 +56,56 @@ model = AutoModelForCausalLM.from_pretrained(model_path,
 gen_model = model
 
 from datasets import load_dataset
-dataset = load_dataset("meta-math/GSM8K_zh", "default", split="train")
-QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question_zh'], dataset['answer'])]
+#dataset = load_dataset("meta-math/GSM8K_zh", "default", split="train")
+dataset = load_dataset("openai/gsm8k", "main", split="train")
+QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
 
 from transformers import GenerationConfig
 generation_config = GenerationConfig(
             max_new_tokens=512,
             do_sample=True, temperature=0.9, 
-            num_return_sequences=num_pre_Q//2,
+            num_return_sequences=num_pre_Q,
             pad_token_id=tokenizer.pad_token_id,
         )
 
-system_prompt = "You are a helpful assistant, first use <think></think> to think, then answer with <answer></answer>"
+system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
 def gen_answers(prompts):
     tip_text = []
     for x in prompts:
         tip_text.append(tokenizer.apply_chat_template([
              {"role": "system", "content": system_prompt},
              {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
-        x += "请先用<think></think>包含思考过程，再以<answer></answer>输出带过程的回答。"
-        tip_text.append(tokenizer.apply_chat_template([{"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
     tip_inputs = tokenizer(tip_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False)
-    tip_inputs = {k: v.to(model.device) for k, v in tip_inputs.items()}
-    tip_completion_ids = gen_model.generate(**tip_inputs, generation_config=generation_config)
     prompt_length = tip_inputs["input_ids"].shape[-1]
+    if prompt_length > max_prompt_length: return []
+    tip_inputs = {k: v.to(model.device) for k, v in tip_inputs.items()}
+    with torch.inference_mode():
+        tip_completion_ids = gen_model.generate(**tip_inputs, generation_config=generation_config)
     completion_ids = tip_completion_ids[:, prompt_length:]
     answers = [tokenizer.decode(x).replace('<|endoftext|>', '') for x in completion_ids]
     return answers
 
+
+from math_verify import parse, verify, ExprExtractionConfig
 def reward_correct(item, answer):
-    nums = re.findall(r'\d+', answer)
+    pattern = r'\d+\.\d+|\d+/\d+|\d+'
+    nums = re.findall(pattern, answer) # 使用正则表达式在answer中查找所有数字
     if len(nums) == 0: return -1.0
-    lastnum = nums[-1]
-    return 1.0 if item["A"] == lastnum else -0.5
+    lastnum = nums[-1] # 用answer中最后一个数字和ground_truth做比较
+    ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
+    ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
+    return 1 if verify(ans, ground_truth) else -1
 def reward_format(item, answer):
-    pattern = r"^<think>.*?</think>\n<answer>.*?</answer><|im_end|>$"
-    return 2 if re.match(pattern, answer, re.DOTALL) else 0
+    # pattern = r"^<think>(?:(?!</?think>)[\s\S]*?)</think>\s*<answer>(?:(?!</?answer>)[\s\S]*?)</answer><\|im_end\|>$"
+    pattern = r"^<think>.*?</think><answer>.*?</answer>$"
+    return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) else -1
+
 
 def gen_samples(inputs):
     prompts = [x["Q"] for x in inputs]
     answers = gen_answers(prompts)
+    if len(answers) == 0: return None, None, None, None
     rewards = []
     for i, inp in enumerate(inputs):
         for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
@@ -111,8 +122,11 @@ def generate_mode(num=10, rank=0):
     for ii in range(num):
         inputs = random.sample(QAs, Q_batch_size)
         prompt_inputs, output_ids, rewards, answers = gen_samples(inputs)
-        if rank == 0: print('rewards:', rewards)
-        if rank == 0 and ii == 5: print('answers:', answers[0])
+        if prompt_inputs is None: continue
+        if rank == 0: 
+            print('rewards:', rewards)
+            if ii == 5:
+                print('answers:', answers[0])
         if (rewards.max() - rewards.min()).item() < 0.01: continue
         rep = output_ids.shape[0] // prompt_inputs.shape[0]
         prompt_length = prompt_inputs.shape[1]
@@ -157,7 +171,6 @@ def GRPO_step(batch):
 
     mean_grouped_rewards = rewards.view(-1, num_pre_Q).mean(dim=1)
     std_grouped_rewards = rewards.view(-1, num_pre_Q).std(dim=1)
-
     mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(num_pre_Q, dim=0)
     std_grouped_rewards = std_grouped_rewards.repeat_interleave(num_pre_Q, dim=0)
     advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
@@ -174,9 +187,10 @@ progress = range(1, all_steps+1)
 if torch.distributed.get_rank() == 0: progress = tqdm(progress)
 for step in progress:
     batch = get_batch()
-    if batch is None:
+    while batch is None:
         generate_mode(rank=torch.distributed.get_rank())
         batch = get_batch()
+
     loss = GRPO_step(batch)
 
     engine.backward(loss)
@@ -185,11 +199,11 @@ for step in progress:
     if torch.distributed.get_rank() == 0:
         progress.set_description(f"Loss: {loss.item():.6f}")
 
-    if step % 200 == 0:
+    if step % save_steps == 0:
         dist.barrier()
         if torch.distributed.get_rank() == 0:
             print('saving model')
-            save_name = f"/data2/hanjin1/ckp/step_{step}"
+            save_name = f"./step_{step}"
             state_dict = engine.module.state_dict()
             state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
             engine.module.save_pretrained(save_name, state_dict=state_dict)
