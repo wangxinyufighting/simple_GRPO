@@ -115,8 +115,9 @@ All parameters are in the code. We need to try more possibilities than a fking l
 
 We have implemented and are testing these features. They will be available soon.
 
-## 🎉🎉🎉 Authors
-This project is developed by Dr. Jiaqing Liang, Ph.D. student Jinyi Han, and Master student Xinyi Wang at the KnowledgeWorks Lab, Fudan University.
+## 🎉🎉🎉 Project Members
+
+This project is led by Dr. Jiaqing Liang and Professor Yanghua Xiao from KnowledgeWorks Lab, Fudan University. The core development team includes Ph.D. candidate Jinyi Han, Master's student Xinyi Wang, and other contributors. We gratefully acknowledge their dedication to this work.
 
 ## 👏👏👏 Citation
 
@@ -124,7 +125,7 @@ If you find the code in our project useful, please consider citing our work as f
 
 ```
 @misc{KW-R1,
-  author = {Jiaqing Liang, Jinyi Han, jie shi, Xinyi Wang, weijia Li, chengyuan Xiong, tingyun Li, Yanghua Xiao},
+  author = {Jiaqing Liang, Jinyi Han, Jie shi, Xinyi Wang, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
   title = {KW-R1: A Simple Implementation of the GRPO Algorithm},
   year = {2025},
   publisher = {GitHub},
