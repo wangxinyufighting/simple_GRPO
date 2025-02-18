@@ -37,7 +37,7 @@ At least two GPUs are needed.
 ## Usage
 Run the following command:
 ``` bash
-CUDA_VISIBLE_DEVICES=7 python ref_model.py
+CUDA_VISIBLE_DEVICES=7 python ref_server.py
 ```
 This just uses one GPU to collect and run the reference model.
 We use http to transport data and logits.
