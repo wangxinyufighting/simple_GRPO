@@ -113,7 +113,7 @@ All parameters are in the code. We need to try more possibilities than a fking l
 
 ## ✨NEW
 - 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it.
-- 2025/02/19：Added regroup version, implemented sampling of generated data on ref_server.
+- 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server.
 
 ## 😊 TODO
 - Answer generation may be invalid due to a group containing all wrong answers or all correct answers. We need group reorganization and better answer generation.
