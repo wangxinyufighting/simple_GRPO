@@ -1,5 +1,5 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import json, os, shutil, re, random, requests, io, sys
+import json, os, shutil, re, random, requests, io, sys, time
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,7 +7,7 @@ import torch.distributed as dist
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 model_path = "/data2/Qwen/Qwen2.5-7B"
-beta = 0.03
+beta = 0.04
 num_pre_Q = 8
 Q_batch_size = 1
 all_steps = 1000
@@ -23,7 +23,7 @@ ds_config = {
     },
     "bf16": {"enabled": True},
     "zero_optimization": {
-        "stage": 1,
+        "stage": 2,
         "allgather_partitions": True,
         "allgather_bucket_size": 2e8,
         "overlap_comm": True,
@@ -56,7 +56,6 @@ model = AutoModelForCausalLM.from_pretrained(model_path,
 gen_model = model
 
 from datasets import load_dataset
-#dataset = load_dataset("meta-math/GSM8K_zh", "default", split="train")
 dataset = load_dataset("openai/gsm8k", "main", split="train")
 QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
 
@@ -119,14 +118,14 @@ def gen_samples(inputs):
 
 def generate_mode(num=10, rank=0):
     if rank == 0: print('enter generate mode')
+    tic = time.time()
     for ii in range(num):
         inputs = random.sample(QAs, Q_batch_size)
         prompt_inputs, output_ids, rewards, answers = gen_samples(inputs)
         if prompt_inputs is None: continue
         if rank == 0: 
             print('rewards:', rewards)
-            if ii == 5:
-                print('answers:', answers[0])
+            if ii == 5: print('answers:', answers[0])
         if (rewards.max() - rewards.min()).item() < 0.01: continue
         rep = output_ids.shape[0] // prompt_inputs.shape[0]
         prompt_length = prompt_inputs.shape[1]
@@ -135,6 +134,7 @@ def generate_mode(num=10, rank=0):
         xdata = make_bytes_list([json.dumps({"plen": prompt_length}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(rewards)])
         requests.post(f"{ref_server}/upload", data=xdata)
     if rank == 0: print('exit generate mode')
+    print(f'{rank}: {time.time()-tic:.3f}s')
 
 if 'genonly' in sys.argv:
     model.to('cuda')
@@ -146,23 +146,26 @@ engine, optimizer, _, _ = deepspeed.initialize(config=ds_config, model=model,
                                                model_parameters=model.parameters())
 gen_model = engine
 
+def get_per_token_logps(logits, input_ids):
+    per_token_logps = [] # Use a loop to reduce memory peak.
+    for logits_row, input_ids_row in zip(logits, input_ids):
+        log_probs = logits_row.log_softmax(dim=-1)
+        token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
+        per_token_logps.append(token_log_prob)
+    return torch.stack(per_token_logps)
+#from kernel.ce_kernel import fast_log_softmax_gather
+#get_per_token_logps = fast_log_softmax_gather
+
 def GRPO_step(batch):
     prompt_length = batch['plen']
     inputs = batch['inputs'].to(engine.device)
     rewards = batch['rewards'].to(engine.device)
 
-    def get_per_token_logps(logits, input_ids):
-        logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-        input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it
-        # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
-        per_token_logps = []
-        for logits_row, input_ids_row in zip(logits, input_ids):
-            log_probs = logits_row.log_softmax(dim=-1)
-            token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
-            per_token_logps.append(token_log_prob)
-        return torch.stack(per_token_logps)
+    logits = engine(inputs).logits
+    logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+    input_ids = inputs[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it
     
-    per_token_logps = get_per_token_logps(engine(inputs).logits, inputs)
+    per_token_logps = get_per_token_logps(logits, input_ids)
     per_token_logps = per_token_logps[:,prompt_length-1:]
     ref_per_token_logps = batch['refs'].to(per_token_logps.device)
 
@@ -192,7 +195,6 @@ for step in progress:
         batch = get_batch()
 
     loss = GRPO_step(batch)
-
     engine.backward(loss)
     engine.step()
 
