@@ -131,7 +131,7 @@ If you find the code in our project useful, please consider citing our work as f
 
 ```
 @misc{KW-R1,
-  author = {Jiaqing Liang, Jinyi Han, Jie shi, Xinyi Wang, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
+  author = {Jiaqing Liang, Jinyi Han, Jie Shi, Xinyi Wang, Boyu Zhu, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
   title = {KW-R1: A Simple Implementation of the GRPO Algorithm},
   year = {2025},
   publisher = {GitHub},
