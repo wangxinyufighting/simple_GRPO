@@ -1,15 +1,13 @@
 
-import json, os, shutil, re, random, io
+import json, os, shutil, re, random, io, time
 import torch
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
     torch.save(t, buffer)
     return buffer.getvalue()
-
 def bytes_to_tensor(b):
-    return torch.load(io.BytesIO(b))
-
+    return torch.load(io.BytesIO(b), weights_only=True)
 def make_bytes_list(blist):
     buffer = io.BytesIO()
     buffer.write(len(blist).to_bytes(4, 'big'))
@@ -17,7 +15,6 @@ def make_bytes_list(blist):
         buffer.write(len(b).to_bytes(4, 'big'))
         buffer.write(b)
     return buffer.getvalue()
-
 def bytes_list_to_list(b):
     buffer = io.BytesIO(b)
     num = int.from_bytes(buffer.read(4), 'big')
@@ -47,7 +44,6 @@ if __name__ == '__main__':
         logits = ref_model(input_ids).logits  # (B, L, V)
         logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
         input_ids = input_ids[:, 1:]  # (B, L-1), exclude the first input ID since we don't have logits for it
-        # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
         per_token_logps = []
         for logits_row, input_ids_row in zip(logits, input_ids):
             log_probs = logits_row.log_softmax(dim=-1)
@@ -55,8 +51,8 @@ if __name__ == '__main__':
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)
 
-    raw_queue = queue.Queue()
-    result_queue = queue.Queue()
+    raw_queue = queue.LifoQueue()
+    result_queue = queue.LifoQueue()
 
     app = bottle.Bottle()
 
@@ -64,17 +60,21 @@ if __name__ == '__main__':
     def do_upload():
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
+        if len(dd) not in (3,4): return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
+        if len(dd) == 4: data['gen_logps'] = bytes_to_tensor(dd[3])
         raw_queue.put(data)
-        print('receive', data['inputs'].shape, data['rewards'])
+        print('receive', data['inputs'].shape, data['rewards'], 
+              data['gen_logps'].shape if 'gen_logps' in data else '')
+        return b'tensor'
 
     @app.route('/get', method='GET')
     def do_get():
         if result_queue.empty(): return b'empty'
         return result_queue.get()
-
+    
     def run_server(): bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
     threading.Thread(target=run_server, daemon=False).start()
 
@@ -84,10 +84,10 @@ if __name__ == '__main__':
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
         per_token_logps = per_token_logps[:,prompt_length-1:]
-        xdata = make_bytes_list([json.dumps(d['base']).encode(), 
-                                 tensor_to_bytes(d['inputs']), 
-                                 tensor_to_bytes(d['rewards']),
-                                 tensor_to_bytes(per_token_logps)])
+        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']), 
+                tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
+        if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
+        xdata = make_bytes_list(data)
         result_queue.put(xdata)
 
     
