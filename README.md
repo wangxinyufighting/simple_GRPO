@@ -139,3 +139,7 @@ If you find the code in our project useful, please consider citing our work as f
   howpublished = {\url{https://github.com/lsdefine/simple_GRPO}},
 }
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=lsdefine/simple_GRPO&type=Date)](https://star-history.com/#lsdefine/simple_GRPO&Date)
