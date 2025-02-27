@@ -7,6 +7,11 @@ We make the simplest codebase to support:
 - Quickly try a lot of things, such as improved multi-answer generation, regrouping, penalty on KL, and parameter tuning.
 - "Aha moment" is observed during the early stages of model training.
 
+## ✨NEW
+- 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it.
+- 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server.
+- 2025/02/27: Added vllm package to accelerate the inference.
+
 ## 🌟 Features
 ### 💡 Simplicity
 The project code is simple, with only about 200 lines of code spread across 2 files. It only depends on standard libraries such as _deepspeed_ and _torch_, without requiring dependencies like ray. It is designed to allow for more complex interventions.
@@ -29,26 +34,6 @@ pip install -r requirements.txt
 At least two GPUs are needed.
 
 ## Usage
-
-### JUST two py files, ref_server_regroup.py and grpo_ref_split.py in the regroup_ver are enough!
-Run the following command:
-``` bash
-CUDA_VISIBLE_DEVICES=7 python ref_server_regroup.py
-```
-This just uses one GPU to collect and run the reference model.
-We use http to transport data and logits.
-They have so little data that they won't be any bottlenecks, http is the easiest to understand and has the fewest dependencies, and can be easily supported on multiple machines (we are using dozens of outdated 4090s to generate QA pairs for them!).
-
-Then, open another bash:
-``` bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 deepspeed grpo_ref_split.py
-```
-Use all other GPUs for training!
-
-All parameters are in the code. We need to try more possibilities than a fking long argparse.
-
-
-
 ### Now, if you have three GPUs or more, you will have a better choice!!!
 Run the following command:
 ``` bash
@@ -121,12 +106,7 @@ CUDA_VISIBLE_DEVICES=2,3,4,5,6 deepspeed grpo_vllm_one.py
 > ...
 > `</think>`
 > `<answer>`350`</answer>`
-
-## ✨NEW
-- 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it.
-- 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server.
-- 2025/02/27: Added vllm package to accelerate the inference.
-  
+ 
 ## 😊 TODO
 - Answer generation may be invalid due to a group containing all wrong answers or all correct answers. We need group reorganization and better answer generation.
 - GPU memory is still tight if it generates long cots. We have to split the groups to make the batch smaller.
