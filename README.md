@@ -8,8 +8,8 @@ We make the simplest codebase to support:
 - "Aha moment" is observed during the early stages of model training.
 
 ## ✨NEW
-- 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it.
-- 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server.
+- 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it. See *simple_grpo_v1* fold
+- 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server. See *regroup_ver* fold
 - 2025/02/27: Added vllm package to accelerate the inference.
 
 ## 🌟 Features
@@ -123,7 +123,7 @@ If you find the code in our project useful, please consider citing our work as f
 
 ```
 @misc{KW-R1,
-  author = {Jiaqing Liang, Jinyi Han, Jie Shi, Xinyi Wang, Zishang Jiang, Boyu Zhu, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
+  author = {Jiaqing Liang, Jinyi Han, Xinyi Wang, Zishang Jiang, Chengyuan Xiong, Boyu Zhu, Jie Shi, Weijia Li, Tingyun Li, Yanghua Xiao},
   title = {KW-R1: A Simple Implementation of the GRPO Algorithm},
   year = {2025},
   publisher = {GitHub},
