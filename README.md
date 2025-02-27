@@ -21,25 +21,19 @@ Training completed in under 1 hour on 1*A800 GPUs. Both Qwen2.5-7B and Qwen2.5-3
 The loss calculation formula is based on Hugging Face's trl. We extend our gratitude to Hugging Face for their contribution.
 
 ## 🙌 Environment
-The runtime environment is depicted below:
-```
->> ds_report
-torch version .................... 2.3.0+cu121
-deepspeed info ................... 0.12.0
-torch cuda version ............... 12.1
-torch hip version ................ None
-nvcc version ..................... 12.1
-deepspeed wheel compiled w. ...... torch 2.3, cuda 12.1
-shared memory (/dev/shm) size .... 1007.76 GB
+The runtime environment is in the requirements.txt
+so you can
+``` bash
+pip install -r requirements.txt
 ```
 At least two GPUs are needed.
 
 ## Usage
 
-### JUST two py files, ref_server.py and grpo_ref_split.py are enough!
+### JUST two py files, ref_server_regroup.py and grpo_ref_split.py in the regroup_ver are enough!
 Run the following command:
 ``` bash
-CUDA_VISIBLE_DEVICES=7 python ref_server.py
+CUDA_VISIBLE_DEVICES=7 python ref_server_regroup.py
 ```
 This just uses one GPU to collect and run the reference model.
 We use http to transport data and logits.
@@ -53,6 +47,23 @@ Use all other GPUs for training!
 
 All parameters are in the code. We need to try more possibilities than a fking long argparse.
 
+
+
+### Now, if you have three GPUs or more, you will have a better choice!!!
+Run the following command:
+``` bash
+CUDA_VISIBLE_DEVICES=7 python ref_server.py
+```
+This just uses one GPU to collect and run the reference model.
+
+In *grpo_vllm_one.py*, set the generation device index ​relative to the visible devices​ in next step:
+``` bash
+gen_device = 1
+```
+Then, open another bash:
+``` bash
+CUDA_VISIBLE_DEVICES=2,3,4,5,6 deepspeed grpo_vllm_one.py
+```
 ## ✨ Experimental Results
 
 1. Runtime Environment
@@ -114,7 +125,8 @@ All parameters are in the code. We need to try more possibilities than a fking l
 ## ✨NEW
 - 2025/02/19: Added a loss triton implementation, which has a little speedup, but you can choose not to use it.
 - 2025/02/19: Added regroup version, implemented sampling of generated data on ref_server.
-
+- 2025/02/27: Added vllm package to accelerate the inference.
+  
 ## 😊 TODO
 - Answer generation may be invalid due to a group containing all wrong answers or all correct answers. We need group reorganization and better answer generation.
 - GPU memory is still tight if it generates long cots. We have to split the groups to make the batch smaller.
@@ -131,7 +143,7 @@ If you find the code in our project useful, please consider citing our work as f
 
 ```
 @misc{KW-R1,
-  author = {Jiaqing Liang, Jinyi Han, Jie Shi, Xinyi Wang, Boyu Zhu, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
+  author = {Jiaqing Liang, Jinyi Han, Jie Shi, Xinyi Wang, Zishang Jiang, Boyu Zhu, Weijia Li, Chengyuan Xiong, Tingyun Li, Yanghua Xiao},
   title = {KW-R1: A Simple Implementation of the GRPO Algorithm},
   year = {2025},
   publisher = {GitHub},
