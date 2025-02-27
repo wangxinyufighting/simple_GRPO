@@ -89,5 +89,3 @@ if __name__ == '__main__':
         if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)
-
-    
