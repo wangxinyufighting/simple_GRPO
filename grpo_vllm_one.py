@@ -124,15 +124,18 @@ def gen_worker(Q, physics_device):
     from math_verify import parse, verify, ExprExtractionConfig
     def reward_correct(item, answer):
         pattern = r'\d+\.\d+|\d+/\d+|\d+'
-        nums = re.findall(pattern, answer) # 使用正则表达式在answer中查找所有数字
+        nums = re.findall(pattern, answer) 
         if len(nums) == 0: return -1.0
-        lastnum = nums[-1] # 用answer中最后一个数字和ground_truth做比较
+        lastnum = nums[-1]
         ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
         ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
         return 1 if verify(ans, ground_truth) else -1
     def reward_format(item, answer):
-        pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"     
-        return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) else -1
+        pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"
+        think_count = answer.count("<think>") + answer.count("</think>")
+        answer_count = answer.count("<answer>") + answer.count("</answer>")
+        return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) and think_count==2 and answer_count==2 else -1
+
 
     def gen_samples(inputs):
         prompts = [x["Q"] for x in inputs]
