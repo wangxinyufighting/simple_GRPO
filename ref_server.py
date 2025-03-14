@@ -2,6 +2,11 @@
 import json, os, shutil, re, random, io, time
 import torch
 
+PORT = 59875
+# MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B-Instruct'
+# MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B-Instruct'
+MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B'
+
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
     torch.save(t, buffer)
@@ -33,7 +38,7 @@ if __name__ == '__main__':
     import bottle, threading, queue
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-    model_path = "/data2/Qwen/Qwen2.5-7B"
+    model_path = MODEL_PATH
 
     ref_model = AutoModelForCausalLM.from_pretrained(model_path,
             torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')
@@ -75,7 +80,7 @@ if __name__ == '__main__':
         if result_queue.empty(): return b'empty'
         return result_queue.get()
     
-    def run_server(): bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+    def run_server(): bottle.run(app, host='0.0.0.0', port=PORT, server='tornado')
     threading.Thread(target=run_server, daemon=False).start()
 
     while True:
