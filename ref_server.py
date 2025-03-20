@@ -1,11 +1,13 @@
 
-import json, os, shutil, re, random, io, time
+import json, os, re, random, io, time
 import torch
 
+# PORT = 59875
 PORT = 59875
+# PORT = 65530
 # MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B-Instruct'
 # MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B-Instruct'
-MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B'
+MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B'
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -33,6 +35,7 @@ if __name__ == '__main__':
     from transformers import AutoTokenizer, AutoModelForCausalLM
     import torch
     import torch.nn as nn
+    import asyncio
 
     from bottle import request
     import bottle, threading, queue
@@ -65,14 +68,19 @@ if __name__ == '__main__':
     def do_upload():
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
-        if len(dd) not in (3,4): return b'tensor'
+        if len(dd) not in (3,4,5): return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
-        if len(dd) == 4: data['gen_logps'] = bytes_to_tensor(dd[3])
+        if len(dd) >= 4: data['gen_logps'] = bytes_to_tensor(dd[3])
+        if len(dd) >= 5: data['uncertainty'] = bytes_to_tensor(dd[4])
         raw_queue.put(data)
-        print('receive', data['inputs'].shape, data['rewards'], 
-              data['gen_logps'].shape if 'gen_logps' in data else '')
+        print('receive', 
+              data['inputs'].shape, 
+              data['rewards'], 
+              data['gen_logps'].shape if 'gen_logps' in data else '',
+              data['uncertainty'].shape if 'uncertainty' in data else '',
+              )
         return b'tensor'
 
     @app.route('/get', method='GET')
@@ -80,8 +88,19 @@ if __name__ == '__main__':
         if result_queue.empty(): return b'empty'
         return result_queue.get()
     
-    def run_server(): bottle.run(app, host='0.0.0.0', port=PORT, server='tornado')
-    threading.Thread(target=run_server, daemon=False).start()
+    # def run_server(): bottle.run(app, host='0.0.0.0', port=PORT, server='tornado')
+    # threading.Thread(target=run_server, daemon=False).start()
+    def run_server():
+        # 创建一个新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # 运行 Bottle 应用
+        bottle.run(app, host='0.0.0.0', port=PORT, server='tornado')
+
+    # 启动线程
+    thread = threading.Thread(target=run_server, daemon=False)
+    thread.start()
 
     while True:
         d = raw_queue.get()
@@ -89,8 +108,13 @@ if __name__ == '__main__':
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
         per_token_logps = per_token_logps[:,prompt_length-1:]
-        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']), 
-                tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
+        data = [
+                json.dumps(d['base']).encode(), 
+                tensor_to_bytes(d['inputs']), 
+                tensor_to_bytes(d['rewards']), 
+                tensor_to_bytes(per_token_logps)
+            ]
         if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
+        if 'uncertainty' in d: data.append(tensor_to_bytes(d['uncertainty']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)

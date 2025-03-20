@@ -32,19 +32,21 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 from ref_server import MODEL_PATH
 model_path = MODEL_PATH
-gen_device_index = 5    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device_index = 4    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 500
-batch_size = 8
-num_pre_Q = 8
+batch_size = 2
+num_pre_Q = 2
 train_batch_size = 2
 gen_update_steps = 16
 save_steps = 50
 compute_gen_logps = True
+use_uncertainty = True
 clip_param = 0.2
 validate_step = 50
 validate_data_num = 300
 val_batch_size = 64
+max_new_tokens = 200
 
 from ref_server import PORT
 ref_server = f"http://localhost:{PORT}"
@@ -103,7 +105,7 @@ def gen_samples_val(inputs, model, tokenizer, num_pre_Q=1):
     voutputs = model.generate(
         **tip_inputs,
         temperature=0.9, 
-        max_new_tokens=1024,
+        max_new_tokens=max_new_tokens,
         )
     answers = []
     for v in voutputs:
@@ -145,7 +147,14 @@ def get_batch():
     data['inputs'] = bytes_to_tensor(dd[1])
     data['rewards'] = bytes_to_tensor(dd[2])
     data['refs'] = bytes_to_tensor(dd[3])
-    if len(dd) == 5: data['gen_logps'] = bytes_to_tensor(dd[4])
+    data['gen_logps'] = bytes_to_tensor(dd[4])
+    if use_uncertainty:
+        data['uncertainty'] = bytes_to_tensor(dd[5])
+
+    for k,v in data.items():
+        if k in ['rewards', 'uncertainty']:
+            print(k, v)
+
     return data
 
 def get_per_token_logps(logits, input_ids):
@@ -170,6 +179,7 @@ def GRPO_step(batch):
     ref_per_token_logps = batch['refs'].to(per_token_logps.device)
     per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
     completion_mask = (inputs[:, prompt_length:] != tokenizer.pad_token_id).int()
+
     if 'gen_logps' in batch:
         ratio = torch.exp(per_token_logps - batch['gen_logps'].to(engine.device))
         clipped_ratio = torch.clamp(ratio, 1-clip_param, 1+clip_param)
@@ -206,17 +216,24 @@ def gen_answers(prompts, vllm_gen, sampling_params, tokenizer):
             {"role": "user", "content": PROMPT.format(x)}], tokenize=False, add_generation_prompt=True))
 
     voutputs = vllm_gen.generate(tip_text, sampling_params, use_tqdm=False)
-    answers = [];  ans_token_ids = []
+    answers = [];  ans_token_ids = []; gen_log_probs = []
     for v in voutputs:
+        tmp_bsz = []
         for z in v.outputs: 
             answers.append(z.text)
             ans_token_ids.append(z.token_ids)
-    return answers, ans_token_ids
+            tmp = []
+            for i in z.logprobs:
+                tmp.append([j.logprob for j in list(i.values())[:2]])
+            tmp_bsz.append(tmp)
+        gen_log_probs.append(tmp_bsz) 
+
+    return answers, ans_token_ids, gen_log_probs
 
 
 def gen_samples(inputs, vllm_gen, sampling_params, tokenizer):
     prompts = [x["Q"] for x in inputs]
-    answers, ans_token_ids = gen_answers(prompts, vllm_gen, sampling_params, tokenizer)
+    answers, ans_token_ids, gen_log_probs = gen_answers(prompts, vllm_gen, sampling_params, tokenizer)
     rewards = []
     correct_rewards = []
     format_rewards = []
@@ -228,23 +245,102 @@ def gen_samples(inputs, vllm_gen, sampling_params, tokenizer):
     prompts_text = [tokenizer.apply_chat_template([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": x+'\n'}], tokenize=False, add_generation_prompt=True) for x in prompts]
-    return prompts_text, torch.tensor(rewards, dtype=torch.float32), answers, ans_token_ids, torch.tensor(correct_rewards, dtype=torch.float32), torch.tensor(format_rewards, dtype=torch.float32)
+    return prompts_text, torch.tensor(rewards, dtype=torch.float32), answers, ans_token_ids, torch.tensor(correct_rewards, dtype=torch.float32), torch.tensor(format_rewards, dtype=torch.float32), gen_log_probs
 
 
 def reward_correct(item, answer):
     pattern = r'\d+\.\d+|\d+/\d+|\d+'
-    nums = re.findall(pattern, answer) 
+    nums = re.findall(pattern, answer) # 使用正则表达式在answer中查找所有数字
     if len(nums) == 0: return -1.0
-    lastnum = nums[-1]
+    lastnum = nums[-1] # 用answer中最后一个数字和ground_truth做比较
     ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
     ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
     return 1 if verify(ans, ground_truth) else -1
 
+# def reward_correct(item, answer):
+#     ans, _ = get_answer_and_span(answer)
+#     if ans is None: return -1.0
+#     ans = parse(ans, extraction_config=[ExprExtractionConfig()])
+#     ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
+#     return 1 if verify(ans, ground_truth) else -1
+
 def reward_format(item, answer):
     pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"
-    think_count = answer.count("<think>") + answer.count("</think>")
-    answer_count = answer.count("<answer>") + answer.count("</answer>")
-    return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) and think_count==2 and answer_count==2 else -1
+    think_count_1 = answer.count("<think>")
+    think_count_2 = answer.count("</think>")
+    answer_count_1 = answer.count("<answer>")
+    answer_count_2 = answer.count("</answer>")
+    return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) and think_count_1==1 and think_count_2 == 1 and answer_count_1 == 1 and answer_count_2==1 else -1
+
+def decode_with_offsets(generation_ids, tokenizer):
+    # I'm not aware of any more convenient way to do this. If you know, please do let me know
+    tokens = tokenizer.convert_ids_to_tokens(generation_ids)
+
+    text = ''
+    offsets = []
+    for i in range(len(generation_ids)):
+        if tokens[i] == tokenizer.eos_token:
+            break
+        text = tokenizer.convert_tokens_to_string(tokens[:i + 1])
+        offsets.append(len(text))
+    offsets += [-1 for _ in range(len(tokens) - len(offsets))]  # add invalid offsets for EOS
+
+    return text, offsets
+
+def match_answer_span(answer_span, offsets):
+    answer_s, answer_e = answer_span
+    inds = []
+    for i, offset in enumerate(offsets):
+        if answer_s < offset:
+            inds.append(i)
+            if answer_e <= offset:
+                break
+    return inds
+
+def get_answer_score(probs):
+    if not isinstance(probs, list):
+        probs = probs.topk(k=2, dim=-1, sorted=True).values
+    score = (probs[:, 0] - probs[:, 1]).mean()
+    return float(score)
+
+def get_answer_and_span(text):
+    answer_content_match = re.search(r'(?<=<answer>).*?(?=</answer>)', text)
+    if answer_content_match:
+        answer_content = answer_content_match.group(0)  # 获取匹配的内容
+        numbers = list(re.finditer(r'\d+\.\d+|\d+/\d+|\d+', answer_content))
+
+        if numbers:
+            # 获取最后一个数字
+            last_number_match = numbers[-1]
+            last_number = last_number_match.group(0)  # 数字的值
+            start_pos = answer_content_match.start() + last_number_match.start()  # 数字的起始位置
+            end_pos = answer_content_match.start() + last_number_match.end()  # 数字的结束位置
+
+            return last_number, (start_pos, end_pos)
+        else:
+            return None, None
+    else:
+        return None, None
+
+def get_uncertainty(tokenizer, num_generations, gen_ids, gen_probs):
+    uncertainties = []
+    # Sample candidates
+    for j in range(num_generations):
+        curr_gen_probs = torch.tensor(gen_probs[j])
+        text, offsets = decode_with_offsets(gen_ids[j], tokenizer)
+        answer, answer_span = get_answer_and_span(text)
+        if answer_span is None:
+            uncertainties.append(0)
+        else:
+            answer_tokens = match_answer_span(answer_span, offsets)
+            if len(answer_tokens) == 2:
+                answer_tokens = answer_tokens[:1]
+
+            answer_probs = curr_gen_probs[answer_tokens] 
+            cot_score = get_answer_score(answer_probs)
+            uncertainties.append(cot_score)
+
+    return torch.tensor(uncertainties, dtype=torch.float32)
 
 
 def gen_worker(Q, data_path, physics_device, tokenizer):
@@ -252,10 +348,10 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
     torch.cuda.set_device(0)
     print(f"Generation worker process uses GPU {physics_device}")
     
-    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.5)
+    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.4)
     ref_server_ver = 'tensor'  # don't worry, it will auto switch based on the first upload
 
-    sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=700)
+    sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=max_new_tokens, logprobs=2)
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
     
     QAs = get_dataset(data_path)
@@ -277,7 +373,7 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
         if it % 2 == 0: try_update_model()
         inputs = random.sample(QAs, batch_size)
         tic = time.time()
-        prompt_inputs, rewards, answers, ans_token_ids, correct_rewards, format_rewards = gen_samples(inputs, vllm_gen, sampling_params, tokenizer)
+        prompt_inputs, rewards, answers, ans_token_ids, correct_rewards, format_rewards, gen_log_probs = gen_samples(inputs, vllm_gen, sampling_params, tokenizer)
         # print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
         # if it % 5 == 0: print('answers:', answers[0])
 
@@ -290,12 +386,17 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
             curr_correct_rewards = correct_rewards[i*num_pre_Q:(i+1)*num_pre_Q]
             curr_format_rewards = format_rewards[i*num_pre_Q:(i+1)*num_pre_Q]
 
+            curr_gen_log_probs = gen_log_probs[i]
+
             wandb.log({
                     "correct_rewards": curr_correct_rewards.mean().item(),
                     "format_rewards": curr_format_rewards.mean().item()
                 })
 
             if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
+
+            if use_uncertainty:
+                answer_uncertainty = get_uncertainty(tokenizer, num_pre_Q, curr_ans_ids, curr_gen_log_probs)
 
             if ref_server_ver == 'tensor':
                 curr_rewards = (curr_rewards - curr_rewards.mean()) / (curr_rewards.std() + 1e-4)
@@ -313,6 +414,9 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
                         zz = [xx.prompt_logprobs[plen:] for xx in zz]
                         gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
                         data.append(tensor_to_bytes(gen_logps))
+                    
+                    if use_uncertainty:
+                        data.append(tensor_to_bytes(answer_uncertainty))
 
                     xdata = make_bytes_list(data)
                     r = requests.post(f"{ref_server}/upload", data=xdata)
