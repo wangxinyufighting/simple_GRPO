@@ -31,22 +31,22 @@ logger = logging.getLogger(__name__)
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 from ref_server import MODEL_PATH
-model_path = MODEL_PATH
-gen_device_index = 4    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device_index = 1    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
-all_steps = 500
-batch_size = 2
-num_pre_Q = 2
-train_batch_size = 2
+all_steps = 1000
+batch_size = 8
+num_pre_Q = 8
+train_batch_size = 4
 gen_update_steps = 16
-save_steps = 50
+save_steps = 100
 compute_gen_logps = True
-use_uncertainty = True
+use_confidence = False
 clip_param = 0.2
 validate_step = 50
 validate_data_num = 300
 val_batch_size = 64
 max_new_tokens = 200
+output_path = 'confidence_v1' if use_confidence else 'no_confidence_v1'
 
 from ref_server import PORT
 ref_server = f"http://localhost:{PORT}"
@@ -148,12 +148,12 @@ def get_batch():
     data['rewards'] = bytes_to_tensor(dd[2])
     data['refs'] = bytes_to_tensor(dd[3])
     data['gen_logps'] = bytes_to_tensor(dd[4])
-    if use_uncertainty:
-        data['uncertainty'] = bytes_to_tensor(dd[5])
+    if use_confidence:
+        data['confidence'] = bytes_to_tensor(dd[5])
 
-    for k,v in data.items():
-        if k in ['rewards', 'uncertainty']:
-            print(k, v)
+    # for k,v in data.items():
+    #     if k in ['rewards', 'confidence']:
+    #         print(k, v)
 
     return data
 
@@ -180,6 +180,10 @@ def GRPO_step(batch):
     per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
     completion_mask = (inputs[:, prompt_length:] != tokenizer.pad_token_id).int()
 
+    if use_confidence:
+        confidence = batch['confidence'].to(engine.device).unsqueeze(1)
+        advantages *= confidence
+
     if 'gen_logps' in batch:
         ratio = torch.exp(per_token_logps - batch['gen_logps'].to(engine.device))
         clipped_ratio = torch.clamp(ratio, 1-clip_param, 1+clip_param)
@@ -187,6 +191,7 @@ def GRPO_step(batch):
     else: 
         per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages
         assert compute_gen_logps is False
+
     per_token_loss = -(per_token_loss - beta * per_token_kl)
     loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
     return loss
@@ -322,15 +327,15 @@ def get_answer_and_span(text):
     else:
         return None, None
 
-def get_uncertainty(tokenizer, num_generations, gen_ids, gen_probs):
-    uncertainties = []
+def get_confidence(tokenizer, num_generations, gen_ids, gen_probs):
+    confidences = []
     # Sample candidates
     for j in range(num_generations):
         curr_gen_probs = torch.tensor(gen_probs[j])
         text, offsets = decode_with_offsets(gen_ids[j], tokenizer)
         answer, answer_span = get_answer_and_span(text)
         if answer_span is None:
-            uncertainties.append(0)
+            confidences.append(0)
         else:
             answer_tokens = match_answer_span(answer_span, offsets)
             if len(answer_tokens) == 2:
@@ -338,9 +343,9 @@ def get_uncertainty(tokenizer, num_generations, gen_ids, gen_probs):
 
             answer_probs = curr_gen_probs[answer_tokens] 
             cot_score = get_answer_score(answer_probs)
-            uncertainties.append(cot_score)
+            confidences.append(cot_score)
 
-    return torch.tensor(uncertainties, dtype=torch.float32)
+    return torch.tensor(confidences, dtype=torch.float32) + 1e-5
 
 
 def gen_worker(Q, data_path, physics_device, tokenizer):
@@ -348,7 +353,7 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
     torch.cuda.set_device(0)
     print(f"Generation worker process uses GPU {physics_device}")
     
-    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.4)
+    vllm_gen = LLM(model=MODEL_PATH, gpu_memory_utilization=0.5)
     ref_server_ver = 'tensor'  # don't worry, it will auto switch based on the first upload
 
     sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=max_new_tokens, logprobs=2)
@@ -395,18 +400,23 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
 
             if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
 
-            if use_uncertainty:
-                answer_uncertainty = get_uncertainty(tokenizer, num_pre_Q, curr_ans_ids, curr_gen_log_probs)
+            if use_confidence:
+                answer_confidence = get_confidence(tokenizer, num_pre_Q, curr_ans_ids, curr_gen_log_probs)
 
             if ref_server_ver == 'tensor':
                 curr_rewards = (curr_rewards - curr_rewards.mean()) / (curr_rewards.std() + 1e-4)
                 for ii in range(0, num_pre_Q, train_batch_size):
                     sub_rewards = curr_rewards[ii:ii+train_batch_size]
                     sub_ans_ids = curr_ans_ids[ii:ii+train_batch_size]
+                    if use_confidence:
+                        sub_answer_confidence = answer_confidence[ii:ii+train_batch_size]
                     tensor_list = [torch.tensor(lst) for lst in sub_ans_ids]
                     output_ids = pad_sequence(tensor_list, batch_first=True, padding_value=tokenizer.pad_token_id) 
                     Qrep = prompt_ids.repeat(1, output_ids.shape[0]).view(-1, plen)
                     merged_ids = torch.cat([Qrep, output_ids], dim=1)
+
+                    merged_text = tokenizer.decode(merged_ids, skip_special_tokens=True)
+
                     data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]       
 
                     if compute_gen_logps:
@@ -415,8 +425,8 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
                         gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
                         data.append(tensor_to_bytes(gen_logps))
                     
-                    if use_uncertainty:
-                        data.append(tensor_to_bytes(answer_uncertainty))
+                    if use_confidence:
+                        data.append(tensor_to_bytes(sub_answer_confidence))
 
                     xdata = make_bytes_list(data)
                     r = requests.post(f"{ref_server}/upload", data=xdata)
@@ -428,8 +438,8 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
                 if r.content == b'tensor': ref_server_ver = 'tensor'
 
 if __name__ == '__main__':
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model_name = model_path.split('/')[-1]
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+    model_name = MODEL_PATH.split('/')[-1]
     data_path = "/home/wxy/project/reasoning/cot_decoding/gsm8k_data/train.jsonl"
 
     import deepspeed
@@ -442,7 +452,7 @@ if __name__ == '__main__':
         p = mp.Process(target=gen_worker, args=(Q, data_path, gen_device_index, tokenizer))
         p.start()
 
-    model = AutoModelForCausalLM.from_pretrained(model_path, 
+    model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, 
             torch_dtype=torch.bfloat16, _attn_implementation="sdpa")
 
     engine, optimizer, _, _ = deepspeed.initialize(config=ds_config, model=model, 
@@ -488,7 +498,7 @@ if __name__ == '__main__':
             dist.barrier()
             if dist.get_rank() == 0:
                 print('saving model')
-                save_name = f"/mnt/local/wxy/models/simple_grpo/{model_name}/step_{step}"
+                save_name = f"/mnt/local/wxy/models/simple_grpo/{model_name}/{output_path}/step_{step}"
                 if not os.path.exists(save_name):
                     os.makedirs(save_name)
                 state_dict = engine.module.state_dict()

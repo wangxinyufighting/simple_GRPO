@@ -7,7 +7,8 @@ PORT = 59875
 # PORT = 65530
 # MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B-Instruct'
 # MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B-Instruct'
-MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B'
+# MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-3B'
+MODEL_PATH = '/mnt/local/wxy/models/Qwen2.5-7B'
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -73,13 +74,13 @@ if __name__ == '__main__':
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
         if len(dd) >= 4: data['gen_logps'] = bytes_to_tensor(dd[3])
-        if len(dd) >= 5: data['uncertainty'] = bytes_to_tensor(dd[4])
+        if len(dd) >= 5: data['confidence'] = bytes_to_tensor(dd[4])
         raw_queue.put(data)
         print('receive', 
               data['inputs'].shape, 
               data['rewards'], 
               data['gen_logps'].shape if 'gen_logps' in data else '',
-              data['uncertainty'].shape if 'uncertainty' in data else '',
+              data['confidence'].shape if 'confidence' in data else '',
               )
         return b'tensor'
 
@@ -115,6 +116,6 @@ if __name__ == '__main__':
                 tensor_to_bytes(per_token_logps)
             ]
         if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
-        if 'uncertainty' in d: data.append(tensor_to_bytes(d['uncertainty']))
+        if 'confidence' in d: data.append(tensor_to_bytes(d['confidence']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)
