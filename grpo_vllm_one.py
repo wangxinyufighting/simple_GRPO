@@ -13,16 +13,19 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 # model_path = "/data2/Qwen/Qwen2.5-7B"
 gen_device = 0    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
-all_steps = 1000
-Q_batch_size = 2
+all_steps = 500
+Q_batch_size = 4
 num_pre_Q = 8
-train_batch_size = 2
+train_batch_size = 4
 gen_update_steps = 16
 save_steps = 100
 compute_gen_logps = True
 clip_param = 0.2
 ref_server = "http://localhost:59875"
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
+
+SYSTEM_PROMPT = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
 
 ds_config = {
     "train_micro_batch_size_per_gpu": train_batch_size,
@@ -110,13 +113,11 @@ def gen_worker(Q, physics_device):
 
     QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
     
-    system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
-    The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
     def gen_answers(prompts):
         tip_text = []
         for x in prompts:
             tip_text.append(tokenizer.apply_chat_template([
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
         voutputs = vllm_gen.generate(tip_text, sampling_params, use_tqdm=False)
         answers = [];  ans_token_ids = []
@@ -150,7 +151,7 @@ def gen_worker(Q, physics_device):
             for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
                 rewards.append(reward_correct(inp, a) + reward_format(inp, a))
         prompts_text = [tokenizer.apply_chat_template([
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True) for x in prompts]
         return prompts_text, torch.tensor(rewards, dtype=torch.float32), answers, ans_token_ids
 
