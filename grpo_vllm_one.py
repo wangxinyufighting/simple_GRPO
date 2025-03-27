@@ -6,17 +6,19 @@ import numpy as np
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from tqdm import tqdm
+from ref_server import MODEL_PATH as model_path
+
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-model_path = "/data2/Qwen/Qwen2.5-7B"
-gen_device = 4    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+# model_path = "/data2/Qwen/Qwen2.5-7B"
+gen_device = 0    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 1000
-Q_batch_size = 5
+Q_batch_size = 2
 num_pre_Q = 8
-train_batch_size = 8
+train_batch_size = 2
 gen_update_steps = 16
-save_steps = 200
+save_steps = 100
 compute_gen_logps = True
 clip_param = 0.2
 ref_server = "http://localhost:59875"
@@ -102,7 +104,10 @@ def gen_worker(Q, physics_device):
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
 
     from datasets import load_dataset
-    dataset = load_dataset("openai/gsm8k", "main", split="train")
+    # dataset = load_dataset("openai/gsm8k", "main", split="train")
+    data_path = "/home/wxy/project/reasoning/cot_decoding/gsm8k_data/train.jsonl"
+    dataset = load_dataset('json', data_files={"train":data_path})['train']
+
     QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
     
     system_prompt = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
@@ -207,6 +212,8 @@ def gen_worker(Q, physics_device):
 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 if __name__ == '__main__':
+    model_name = model_path.split('/')[-1]
+
     import deepspeed
     deepspeed.init_distributed()
 
@@ -251,7 +258,7 @@ if __name__ == '__main__':
             dist.barrier()
             if dist.get_rank() == 0:
                 print('saving model')
-                save_name = f"./step_{step}"
+                save_name = f"/mnt/local/wxy/models/simple_grpo/og/{model_name}/step_{step}"
                 state_dict = engine.module.state_dict()
                 state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
                 engine.module.save_pretrained(save_name, state_dict=state_dict)

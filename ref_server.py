@@ -2,6 +2,8 @@
 import json, os, shutil, re, random, io, time
 import torch
 
+MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
     torch.save(t, buffer)
@@ -31,11 +33,11 @@ if __name__ == '__main__':
 
     from bottle import request
     import bottle, threading, queue
+    import asyncio
+
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-    model_path = "/data2/Qwen/Qwen2.5-7B"
-
-    ref_model = AutoModelForCausalLM.from_pretrained(model_path,
+    ref_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH,
             torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')
     ref_model.eval()
     ref_model.requires_grad_(False)
@@ -75,7 +77,11 @@ if __name__ == '__main__':
         if result_queue.empty(): return b'empty'
         return result_queue.get()
     
-    def run_server(): bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+    def run_server(): 
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+        
     threading.Thread(target=run_server, daemon=False).start()
 
     while True:
