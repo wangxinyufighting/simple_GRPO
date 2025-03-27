@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 from ref_server import MODEL_PATH
-gen_device_index = 1    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device_index = 5    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 1000
 batch_size = 8
@@ -42,7 +42,7 @@ save_steps = 100
 compute_gen_logps = True
 use_confidence = False
 clip_param = 0.2
-validate_step = 50
+validate_step = 100
 validate_data_num = 300
 val_batch_size = 64
 max_new_tokens = 200
@@ -415,7 +415,7 @@ def gen_worker(Q, data_path, physics_device, tokenizer):
                     Qrep = prompt_ids.repeat(1, output_ids.shape[0]).view(-1, plen)
                     merged_ids = torch.cat([Qrep, output_ids], dim=1)
 
-                    merged_text = tokenizer.decode(merged_ids, skip_special_tokens=True)
+                    # merged_text = tokenizer.decode(merged_ids, skip_special_tokens=True)
 
                     data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]       
 
@@ -477,13 +477,13 @@ if __name__ == '__main__':
                     "loss": loss.item()
                 })
             
-        if step == 1 or step % validate_step == 0:
-            val_acc = validate(val_data, step, engine.module, val_batch_size)
-            wandb.log({"val_acc":val_acc})
+        # if step == 1 or step % validate_step == 0:
+        #     val_acc = validate(val_data, step, engine.module, val_batch_size)
+        #     wandb.log({"val_acc":val_acc})
 
-            print(f"step:{step}, batch_size:{batch_size}, val acc:{100*val_acc:.2f}%")
-            with open('./val_result.txt', 'a') as f:
-                f.write(f"step:{step}, batch_size:{batch_size}, val acc:{100*val_acc:.2f}%\n")
+        #     print(f"step:{step}, batch_size:{batch_size}, val acc:{100*val_acc:.2f}%")
+        #     with open('./val_result.txt', 'a') as f:
+        #         f.write(f"step:{step}, batch_size:{batch_size}, val acc:{100*val_acc:.2f}%\n")
 
         if step % gen_update_steps == 0:
             dist.barrier()
