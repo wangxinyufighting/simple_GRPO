@@ -153,6 +153,8 @@ if __name__ == '__main__':
     max_new_tokens = args.max_new_tokens
     model_path = args.model_path
 
+    print(model_path)
+
     model_name = model_path.split('/')[-1]
     model = AutoModelForCausalLM.from_pretrained(model_path,
                 torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')

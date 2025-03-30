@@ -11,15 +11,19 @@ from ref_server import MODEL_PATH as model_path
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
 # model_path = "/data2/Qwen/Qwen2.5-7B"
-gen_device = 0    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device = 5    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
-all_steps = 500
+all_steps = 1000
 Q_batch_size = 4
 num_pre_Q = 8
-train_batch_size = 4
+train_batch_size = 2
 gen_update_steps = 16
 save_steps = 100
 compute_gen_logps = True
+use_confidence = False
+
+output_path = 'condidence' if use_confidence else 'no_confidence'
+
 clip_param = 0.2
 ref_server = "http://localhost:59875"
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list

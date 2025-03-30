@@ -2,7 +2,8 @@
 import json, os, shutil, re, random, io, time
 import torch
 
-MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+# MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
