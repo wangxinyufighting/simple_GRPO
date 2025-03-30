@@ -45,7 +45,7 @@ clip_param = 0.2
 validate_step = 100
 validate_data_num = 300
 val_batch_size = 64
-max_new_tokens = 200
+max_new_tokens = 700
 output_path = 'confidence_v1' if use_confidence else 'no_confidence_v1'
 
 from ref_server import PORT
