@@ -2,8 +2,8 @@
 import json, os, shutil, re, random, io, time
 import torch
 
-# MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
-MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
+MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+# MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
 USE_CONFIDENCE = True
 
 def tensor_to_bytes(t):
@@ -105,7 +105,7 @@ if __name__ == '__main__':
                 tensor_to_bytes(per_token_logps)
                 ]
         data.append(tensor_to_bytes(d['gen_logps']))
-        if USE_CONFIDENCE in d: 
+        if USE_CONFIDENCE: 
             data.append(tensor_to_bytes(d['confidence']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)

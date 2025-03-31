@@ -11,20 +11,19 @@ from ref_server import USE_CONFIDENCE as use_confidence
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-# model_path = "/data2/Qwen/Qwen2.5-7B"
-gen_device = 5    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device = 0   
 beta = 0.04
-all_steps = 1000
+all_steps = 500
 Q_batch_size = 4
 num_pre_Q = 8
 train_batch_size = 4
 gen_update_steps = 16
 save_steps = 100
 compute_gen_logps = True
+clip_param = 0.2
 
 output_path = 'condidence_v2' if use_confidence else 'no_confidence_v2'
 
-clip_param = 0.2
 ref_server = "http://localhost:59875"
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
 
@@ -62,7 +61,10 @@ def get_batch():
     data['inputs'] = bytes_to_tensor(dd[1])
     data['rewards'] = bytes_to_tensor(dd[2])
     data['refs'] = bytes_to_tensor(dd[3])
-    if len(dd) == 5: data['gen_logps'] = bytes_to_tensor(dd[4])
+    data['gen_logps'] = bytes_to_tensor(dd[4])
+    if use_confidence:
+        data['confidence'] = bytes_to_tensor(dd[5])
+
     return data
 
 def get_per_token_logps(logits, input_ids):
@@ -265,11 +267,11 @@ def gen_worker(Q, physics_device):
             curr_ans_ids = ans_token_ids[i*num_pre_Q:(i+1)*num_pre_Q]
             curr_rewards = rewards[i*num_pre_Q:(i+1)*num_pre_Q]
 
-            curr_gen_log_probs = ans_logprob[i]
 
             if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
 
             if use_confidence:
+                curr_gen_log_probs = ans_logprob[i]
                 answer_confidence = get_confidence(tokenizer, num_pre_Q, curr_ans_ids, curr_gen_log_probs)
 
             if ref_server_ver == 'tensor':
