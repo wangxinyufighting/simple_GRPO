@@ -4,7 +4,7 @@ import torch
 
 MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
 # MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
-USE_CONFIDENCE = True
+USE_CONFIDENCE = False
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -64,7 +64,7 @@ if __name__ == '__main__':
     def do_upload():
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
-        if len(dd) not in (3,4): return b'tensor'
+        if len(dd) not in (3,4,5): return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
