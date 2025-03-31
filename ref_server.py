@@ -4,6 +4,7 @@ import torch
 
 # MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
 MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
+USE_CONFIDENCE = True
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -67,10 +68,16 @@ if __name__ == '__main__':
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
-        if len(dd) == 4: data['gen_logps'] = bytes_to_tensor(dd[3])
+        data['gen_logps'] = bytes_to_tensor(dd[3])
+        if USE_CONFIDENCE: 
+            data['confidence'] = bytes_to_tensor(dd[4])
         raw_queue.put(data)
-        print('receive', data['inputs'].shape, data['rewards'], 
-              data['gen_logps'].shape if 'gen_logps' in data else '')
+        print('receive'
+              'inputs.shape: ', data['inputs'].shape,
+              'rewards: ', data['rewards'],
+              'gen_logps.shape: ', data['gen_logps'].shape if 'gen_logps' in data else '',
+              'confidence: ', data['confidence'] if 'confidence' in data else ''
+              )
         return b'tensor'
 
     @app.route('/get', method='GET')
@@ -91,8 +98,14 @@ if __name__ == '__main__':
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
         per_token_logps = per_token_logps[:,prompt_length-1:]
-        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']), 
-                tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
-        if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
+        data = [
+                json.dumps(d['base']).encode(), 
+                tensor_to_bytes(d['inputs']), 
+                tensor_to_bytes(d['rewards']), 
+                tensor_to_bytes(per_token_logps)
+                ]
+        data.append(tensor_to_bytes(d['gen_logps']))
+        if USE_CONFIDENCE in d: 
+            data.append(tensor_to_bytes(d['confidence']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)
