@@ -22,12 +22,15 @@ save_steps = 100
 compute_gen_logps = True
 clip_param = 0.2
 
-output_path = 'condidence_v2' if use_confidence else 'no_confidence_v2'
+output_path = 'confidence_v3' if use_confidence else 'no_confidence_v3'
 
 ref_server = "http://localhost:59875"
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
 
-SYSTEM_PROMPT = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
+SYSTEM_PROMPT = """You are a helpful assistant. 
+A conversation between User and Assistant. 
+The user asks a question, and the Assistant solves it. 
+The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
 The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
 
 ds_config = {
@@ -101,6 +104,7 @@ def GRPO_step(batch):
     else: 
         per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages
         assert compute_gen_logps is False
+
     per_token_loss = -(per_token_loss - beta * per_token_kl)
     loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
     return loss
@@ -121,7 +125,6 @@ def gen_worker(Q, physics_device):
     # dataset = load_dataset("openai/gsm8k", "main", split="train")
     data_path = "/home/wxy/project/reasoning/cot_decoding/gsm8k_data/train.jsonl"
     dataset = load_dataset('json', data_files={"train":data_path})['train']
-
     QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
     
     def gen_answers(prompts):
@@ -149,17 +152,19 @@ def gen_worker(Q, physics_device):
         return answers, ans_token_ids, ans_logprob
 
     from math_verify import parse, verify, ExprExtractionConfig
+
+    
     def reward_correct(item, answer):
         # pattern = r'\d+\.\d+|\d+/\d+|\d+'
         # nums = re.findall(pattern, answer) 
         # if len(nums) == 0: return -1.0
         # lastnum = nums[-1]
-        lastnum, _ = get_answer(answer)
+        lastnum, _ = get_answer_and_span(answer)
         ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
         ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
         return 1 if verify(ans, ground_truth) else -1
     
-    def get_answer(answer):
+    def get_answer_and_span(answer):
         pattern = r'\d+\.\d+|\d+/\d+|\d+'
         matches = list(re.finditer(pattern, answer))  # 获取所有匹配项及其位置信息
         if len(matches) == 0:
@@ -225,26 +230,27 @@ def gen_worker(Q, physics_device):
                 if answer_e <= offset:
                     break
         return inds
-    
+
     def get_answer_score(probs):
         if not isinstance(probs, list):
             probs = probs.topk(k=2, dim=-1, sorted=True).values
         score = (probs[:, 0] - probs[:, 1]).mean()
         return float(score)
-        
+
     def get_confidence(tokenizer, num_generations, gen_ids, gen_probs):
         confidences = []
         # Sample candidates
         for j in range(num_generations):
             curr_gen_probs = torch.tensor(gen_probs[j])
             text, offsets = decode_with_offsets(gen_ids[j], tokenizer)
-            answer, answer_span = get_answer(text)
+            answer, answer_span = get_answer_and_span(text)
             if answer_span is None:
                 confidences.append(0)
             else:
                 answer_tokens = match_answer_span(answer_span, offsets)
                 if len(answer_tokens) == 2:
                     answer_tokens = answer_tokens[:1]
+
                 answer_probs = curr_gen_probs[answer_tokens] 
                 cot_score = get_answer_score(answer_probs)
                 confidences.append(cot_score)
@@ -257,8 +263,8 @@ def gen_worker(Q, physics_device):
         inputs = random.sample(QAs, Q_batch_size)
         tic = time.time()
         prompt_inputs, rewards, answers, ans_token_ids, ans_logprob = gen_samples(inputs)
-        print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
-        if it % 5 == 0: print('answers:', answers[0])
+        # print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
+        # if it % 5 == 0: print('answers:', answers[0])
 
         for i, pp in enumerate(prompt_inputs):
             prompt_ids = tokenizer(pp, return_tensors="pt", add_special_tokens=False)["input_ids"]
