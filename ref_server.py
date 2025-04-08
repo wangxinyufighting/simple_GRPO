@@ -2,9 +2,10 @@
 import json, os, shutil, re, random, io, time
 import torch
 
-MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+# MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-1.5B-Instruct"
 # MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-7B"
-USE_CONFIDENCE = False
+USE_CONFIDENCE = True
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -37,12 +38,16 @@ if __name__ == '__main__':
     import bottle, threading, queue
     import asyncio
 
+    print('ref_server start!')
+
     os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
     ref_model = AutoModelForCausalLM.from_pretrained(MODEL_PATH,
             torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')
     ref_model.eval()
     ref_model.requires_grad_(False)
+
+    print('load model successful!')
 
     def get_per_token_logps(input_ids):
         logits = ref_model(input_ids).logits  # (B, L, V)
@@ -62,8 +67,10 @@ if __name__ == '__main__':
 
     @app.route('/upload', method='POST')
     def do_upload():
+        print('ref_server do_upload')
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
+        print('len(dd):', len(dd))
         if len(dd) not in (3,4,5): return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
@@ -93,7 +100,9 @@ if __name__ == '__main__':
     threading.Thread(target=run_server, daemon=False).start()
 
     while True:
+        print('ref_server while start!')
         d = raw_queue.get()
+        print(d)
         prompt_length = d['base']['plen']
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
