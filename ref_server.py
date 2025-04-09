@@ -3,6 +3,11 @@ import json, os, shutil, re, random, io, time
 import torch
 
 MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-3B"
+# MODEL_PATH = "/mnt/local/wxy/models/Qwen2.5-1.5B-Instruct"
+# USE_CONFIDENCE = False
+USE_CONFIDENCE = True
+PORT = 59875
+
 
 def tensor_to_bytes(t):
     buffer = io.BytesIO()
@@ -60,16 +65,27 @@ if __name__ == '__main__':
 
     @app.route('/upload', method='POST')
     def do_upload():
+        # print('\n\n## do_upload ')
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
-        if len(dd) not in (3,4): return b'tensor'
+        # print('\n\ndo_upload len(dd):', len(dd))
+        if len(dd) not in (4,5): return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1])
         data['rewards'] = bytes_to_tensor(dd[2])
-        if len(dd) == 4: data['gen_logps'] = bytes_to_tensor(dd[3])
+        data['gen_logps'] = bytes_to_tensor(dd[3])
+
+        if USE_CONFIDENCE: 
+            data['confidence'] = bytes_to_tensor(dd[4])
         raw_queue.put(data)
-        print('receive', data['inputs'].shape, data['rewards'], 
-              data['gen_logps'].shape if 'gen_logps' in data else '')
+
+        print('##receive##: '
+              '\ninputs.shape: ', data['inputs'].shape,
+              '\nrewards: ', data['rewards'],
+              '\ngen_logps.shape: ', data['gen_logps'].shape if 'gen_logps' in data else '',
+              '\nconfidence: ', data['confidence'] if 'confidence' in data else 'None',
+              '\n'
+              )
         return b'tensor'
 
     @app.route('/get', method='GET')
@@ -80,18 +96,26 @@ if __name__ == '__main__':
     def run_server(): 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        bottle.run(app, host='0.0.0.0', port=59875, server='tornado')
+        bottle.run(app, host='0.0.0.0', port=PORT, server='tornado')
         
     threading.Thread(target=run_server, daemon=False).start()
 
     while True:
         d = raw_queue.get()
+        # print('ref_server:', len(d))
         prompt_length = d['base']['plen']
         with torch.inference_mode():
             per_token_logps = get_per_token_logps(d['inputs'].to(ref_model.device))
         per_token_logps = per_token_logps[:,prompt_length-1:]
-        data = [json.dumps(d['base']).encode(), tensor_to_bytes(d['inputs']), 
-                tensor_to_bytes(d['rewards']), tensor_to_bytes(per_token_logps)]
-        if 'gen_logps' in d: data.append(tensor_to_bytes(d['gen_logps']))
+        data = [
+                json.dumps(d['base']).encode()
+                , tensor_to_bytes(d['inputs'])
+                , tensor_to_bytes(d['rewards'])
+                , tensor_to_bytes(per_token_logps)
+            ]
+        if 'gen_logps' in d: 
+            data.append(tensor_to_bytes(d['gen_logps']))
+        if USE_CONFIDENCE: 
+            data.append(tensor_to_bytes(d['confidence']))
         xdata = make_bytes_list(data)
         result_queue.put(xdata)

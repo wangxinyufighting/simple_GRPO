@@ -7,11 +7,28 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from tqdm import tqdm
 from ref_server import MODEL_PATH as model_path
+from ref_server import USE_CONFIDENCE as use_confidence
+from ref_server import PORT
+
+# import logging
+# from datetime import datetime
+
+# now = datetime.now()
+# dt_string = now.strftime("%Y_%m_%d_%H:%M:%S")
+
+# log_path = f'./log/{now.strftime("%Y_%m_%d")}'
+# if not os.path.exists(log_path):
+#     os.makedirs(log_path)
+
+# logging.basicConfig(level=logging.ERROR,
+#                     filename=f'{log_path}/log_{dt_string}.log',
+#                     datefmt='%Y/%m/%d %H:%M:%S',
+#                     format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+# logger = logging.getLogger(__name__)
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
-# model_path = "/data2/Qwen/Qwen2.5-7B"
-gen_device = 0    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
+gen_device = 6    # GPU device for generation, don't put it in CUDA_VISIBLE_DEVICES
 beta = 0.04
 all_steps = 500
 Q_batch_size = 4
@@ -21,8 +38,12 @@ gen_update_steps = 16
 save_steps = 100
 compute_gen_logps = True
 clip_param = 0.2
-ref_server = "http://localhost:59875"
+ref_server = f"http://localhost:{PORT}"
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+
 from ref_server import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
+
+parent_path = 'confidence_v3' if use_confidence else 'no_confidence_v3' 
 
 SYSTEM_PROMPT = """You are a helpful assistant. A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The Assistant first thinks about the reasoning process in the mind and then provides the user with the answer.\
 The reasoning process and answer are enclosed within <think> </think> and<answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>."""
@@ -58,7 +79,10 @@ def get_batch():
     data['inputs'] = bytes_to_tensor(dd[1])
     data['rewards'] = bytes_to_tensor(dd[2])
     data['refs'] = bytes_to_tensor(dd[3])
-    if len(dd) == 5: data['gen_logps'] = bytes_to_tensor(dd[4])
+    data['gen_logps'] = bytes_to_tensor(dd[4])
+    if use_confidence:
+        data['confidence'] = bytes_to_tensor(dd[5])
+
     return data
 
 def get_per_token_logps(logits, input_ids):
@@ -83,6 +107,11 @@ def GRPO_step(batch):
     ref_per_token_logps = batch['refs'].to(per_token_logps.device)
     per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
     completion_mask = (inputs[:, prompt_length:] != tokenizer.pad_token_id).int()
+
+    if use_confidence:
+        confidence = batch['confidence'].to(engine.device).unsqueeze(1)
+        advantages *= confidence
+
     if 'gen_logps' in batch:
         ratio = torch.exp(per_token_logps - batch['gen_logps'].to(engine.device))
         clipped_ratio = torch.clamp(ratio, 1-clip_param, 1+clip_param)
@@ -100,10 +129,10 @@ def gen_worker(Q, physics_device):
     torch.cuda.set_device(0)
     print(f"Generation worker process uses GPU {physics_device}")
     from vllm import LLM, SamplingParams
-    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.5)
+    vllm_gen = LLM(model=model_path, gpu_memory_utilization=0.6)
     ref_server_ver = 'tensor'  # don't worry, it will auto switch based on the first upload
 
-    sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=700)
+    sampling_params = SamplingParams(n=num_pre_Q, temperature=0.9, max_tokens=700, logprobs=2)
     gen_logps_sp = SamplingParams(temperature=0, top_p=1, max_tokens=1, prompt_logprobs=1)
 
     from datasets import load_dataset
@@ -120,22 +149,67 @@ def gen_worker(Q, physics_device):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True))
         voutputs = vllm_gen.generate(tip_text, sampling_params, use_tqdm=False)
-        answers = [];  ans_token_ids = []
+        answers = []
+        ans_token_ids = []
+        ans_logprob = []
         for v in voutputs:
             for z in v.outputs: 
                 answers.append(z.text)
                 ans_token_ids.append(z.token_ids)
-        return answers, ans_token_ids
+
+                tmp = []
+                for i in z.logprobs:
+                    tmp.append([j.logprob for j in list(i.values())[:2]])
+                ans_logprob.append(tmp)
+
+        return answers, ans_token_ids, ans_logprob
 
     from math_verify import parse, verify, ExprExtractionConfig
-    def reward_correct(item, answer):
+    def get_answer_and_span_v2(text, tokenizer):
         pattern = r'\d+\.\d+|\d+/\d+|\d+'
-        nums = re.findall(pattern, answer) 
-        if len(nums) == 0: return -1.0
-        lastnum = nums[-1]
+        matches = list(re.finditer(pattern, text))
+
+        if len(matches) == 0:
+            return None, None, None
+        
+        last_match = matches[-1]  # 获取最后一个匹配项
+        last_num_str = last_match.group()  # 获取匹配的文本
+        start_idx = last_match.start()  # 获取匹配文本的起始位置
+        end_idx = last_match.end()
+        
+        # 2. 获取 token 对齐信息
+        encoded = tokenizer(text, return_offsets_mapping=True)
+        offset_mapping = encoded["offset_mapping"]
+
+        # 3. 找到覆盖该数字的所有 token 索引
+        token_indices = [
+            token_idx for token_idx, (start, end) in enumerate(offset_mapping)
+            if start < end_idx and end > start_idx  # 判断 token 与数字范围是否有重叠
+        ]
+
+        if not token_indices:
+            return None, None, None
+
+        return last_num_str, (start_idx, end_idx), token_indices
+    
+    def reward_correct(item, answer):
+        # pattern = r'\d+\.\d+|\d+/\d+|\d+'
+        # nums = re.findall(pattern, answer) 
+        # if len(nums) == 0: return -1.0
+        lastnum, _, _ = get_answer_and_span_v2(answer, tokenizer)
+        if lastnum is None:
+            return -1
         ans = parse(lastnum, extraction_config=[ExprExtractionConfig()])
         ground_truth = parse(item["A"], extraction_config=[ExprExtractionConfig()])
         return 1 if verify(ans, ground_truth) else -1
+    
+    def reward_confidence(answer, ans_logprob):
+        _, _, token_indices = get_answer_and_span_v2(answer, tokenizer)
+        ans_logprob = torch.tensor(ans_logprob)
+        answer_token_logprob = ans_logprob[token_indices]
+        confidence = (answer_token_logprob[:, 0] - answer_token_logprob[:, 1]).mean()
+        return confidence
+
     def reward_format(item, answer):
         pattern = r"^<think>.*?</think>[\n ]*<answer>.*?</answer>$"
         think_count = answer.count("<think>") + answer.count("</think>")
@@ -145,15 +219,22 @@ def gen_worker(Q, physics_device):
 
     def gen_samples(inputs):
         prompts = [x["Q"] for x in inputs]
-        answers, ans_token_ids = gen_answers(prompts)
+        answers, ans_token_ids, ans_logprob = gen_answers(prompts)
         rewards = []
+        confidences = []
         for i, inp in enumerate(inputs):
-            for a in answers[i*num_pre_Q:(i+1)*num_pre_Q]:
+            tmp_answers = answers[i*num_pre_Q:(i+1)*num_pre_Q]
+            tmp_answers_logprob = ans_logprob[i*num_pre_Q:(i+1)*num_pre_Q]
+
+            for a,logprob in zip(tmp_answers, tmp_answers_logprob):
                 rewards.append(reward_correct(inp, a) + reward_format(inp, a))
+                confidences.append(reward_confidence(a, logprob))
+
         prompts_text = [tokenizer.apply_chat_template([
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": x}], tokenize=False, add_generation_prompt=True) for x in prompts]
-        return prompts_text, torch.tensor(rewards, dtype=torch.float32), answers, ans_token_ids
+        
+        return prompts_text, torch.tensor(rewards, dtype=torch.float32), answers, ans_token_ids, torch.tensor(confidences, dtype=torch.float32)
 
     def try_update_model():
         try:
@@ -167,21 +248,56 @@ def gen_worker(Q, physics_device):
             #print('[VLLM PROC] no new model')
             return
         
+    def get_answer_score(probs):
+        if not isinstance(probs, list):
+            probs = probs.topk(k=2, dim=-1, sorted=True).values
+        score = (probs[:, 0] - probs[:, 1]).mean()
+        return float(score)
+    
+    def decode_answer(generation_ids, tokenizer):
+        tokens = tokenizer.convert_ids_to_tokens(generation_ids)
+        text = ''
+        for i in range(len(generation_ids)):
+            if tokens[i] == tokenizer.eos_token:
+                break
+            text = tokenizer.convert_tokens_to_string(tokens[:i + 1])
+
+        return text
+    
+    def get_confidence(tokenizer, num_generations, gen_ids, gen_probs):
+        confidences = []
+        # Sample candidates
+        for j in range(num_generations):
+            curr_gen_probs = torch.tensor(gen_probs[j])
+            text = decode_answer(gen_ids[j], tokenizer)
+            _, answer_span, token_span = get_answer_and_span_v2(text)
+            if answer_span is None:
+                confidences.append(1)
+            else:
+                # answer_tokens = match_answer_span(answer_span, offsets)
+                answer_probs = curr_gen_probs[token_span] 
+                cot_score = get_answer_score(answer_probs)
+                confidences.append(cot_score)
+
+        return torch.tensor(confidences, dtype=torch.float32) + 1e-5
+        
     from torch.nn.utils.rnn import pad_sequence
     for it in range(999999999):
         if it % 3 == 0: try_update_model()
         inputs = random.sample(QAs, Q_batch_size)
         tic = time.time()
-        prompt_inputs, rewards, answers, ans_token_ids = gen_samples(inputs)
+        prompt_inputs, rewards, answers, ans_token_ids, answer_confidence = gen_samples(inputs)
         print(f'time: {time.time()-tic:.2f}s    ', 'rewards:', rewards, )
-        if it % 5 == 0: print('answers:', answers[0])
+        if it % 10 == 0: print('answers:', answers[0])
 
         for i, pp in enumerate(prompt_inputs):
+            print('#### prompt:', i)
             prompt_ids = tokenizer(pp, return_tensors="pt", add_special_tokens=False)["input_ids"]
             plen = prompt_ids.shape[1]
             curr_answers = answers[i*num_pre_Q:(i+1)*num_pre_Q]
             curr_ans_ids = ans_token_ids[i*num_pre_Q:(i+1)*num_pre_Q]
             curr_rewards = rewards[i*num_pre_Q:(i+1)*num_pre_Q]
+            curr_confidence = answer_confidence[i*num_pre_Q:(i+1)*num_pre_Q]
             if curr_rewards.max() - curr_rewards.min() < 1e-4: continue
 
             if ref_server_ver == 'tensor':
@@ -189,17 +305,22 @@ def gen_worker(Q, physics_device):
                 for ii in range(0, num_pre_Q, train_batch_size):
                     sub_rewards = curr_rewards[ii:ii+train_batch_size]
                     sub_ans_ids = curr_ans_ids[ii:ii+train_batch_size]
+
                     tensor_list = [torch.tensor(lst) for lst in sub_ans_ids]
                     output_ids = pad_sequence(tensor_list, batch_first=True, padding_value=tokenizer.pad_token_id) 
                     Qrep = prompt_ids.repeat(1, output_ids.shape[0]).view(-1, plen)
                     merged_ids = torch.cat([Qrep, output_ids], dim=1)
-                    data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]       
 
-                    if compute_gen_logps:
-                        zz = vllm_gen.generate(prompt_token_ids=merged_ids.tolist(), sampling_params=gen_logps_sp, use_tqdm=False)
-                        zz = [xx.prompt_logprobs[plen:] for xx in zz]
-                        gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
-                        data.append(tensor_to_bytes(gen_logps))
+                    data = [json.dumps({"plen": plen}).encode(), tensor_to_bytes(merged_ids), tensor_to_bytes(sub_rewards)]
+
+                    zz = vllm_gen.generate(prompt_token_ids=merged_ids.tolist(), sampling_params=gen_logps_sp, use_tqdm=False)
+                    zz = [xx.prompt_logprobs[plen:] for xx in zz]
+                    gen_logps = torch.tensor([[list(x.values())[0].logprob for x in xx] for xx in zz])
+                    data.append(tensor_to_bytes(gen_logps))
+
+                    if use_confidence:
+                        sub_answer_confidence = curr_confidence[ii:ii+train_batch_size]
+                        data.append(tensor_to_bytes(sub_answer_confidence))                               
 
                     xdata = make_bytes_list(data)
                     r = requests.post(f"{ref_server}/upload", data=xdata)
@@ -211,7 +332,7 @@ def gen_worker(Q, physics_device):
                 if r.content == b'tensor': ref_server_ver = 'tensor'
 
 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
+
 if __name__ == '__main__':
     model_name = model_path.split('/')[-1]
 
@@ -236,7 +357,7 @@ if __name__ == '__main__':
     for step in progress:
         batch = get_batch()
         while batch is None:
-            print('waiting for batch...'); time.sleep(1)
+            print('waiting for batch...'); time.sleep(5)
             batch = get_batch()
 
         loss = GRPO_step(batch)
@@ -259,7 +380,7 @@ if __name__ == '__main__':
             dist.barrier()
             if dist.get_rank() == 0:
                 print('saving model')
-                save_name = f"/mnt/local/wxy/models/simple_grpo/og/{model_name}/step_{step}"
+                save_name = f"/mnt/local/wxy/models/simple_grpo/{parent_path}/{model_name}/step_{step}"
                 state_dict = engine.module.state_dict()
                 state_dict = type(state_dict)({k: v.cpu() for k, v in state_dict.items()})
                 engine.module.save_pretrained(save_name, state_dict=state_dict)
