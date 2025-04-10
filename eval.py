@@ -156,5 +156,9 @@ if __name__ == '__main__':
     test_data = prepare_dataset(args.data_path, split="test")
     after_grpo_accuracy = evaluate_model(model, tokenizer, test_data, max_new_tokens=max_new_tokens, batch_size=batch_size)
 
+    print(model_path)
+    print(batch_size)
+    print(after_grpo_accuracy)
+
     with open(f'./result.txt', 'a') as f:
         f.write(f'{model_path}\t{after_grpo_accuracy}\t{batch_size}\t{max_new_tokens}\t{data_path}\n')
