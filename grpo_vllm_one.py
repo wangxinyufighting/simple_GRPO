@@ -137,7 +137,7 @@ def gen_worker(Q, physics_device):
 
     from datasets import load_dataset
     # dataset = load_dataset("openai/gsm8k", "main", split="train")
-    data_path = "/home/wxy/project/reasoning/cot_decoding/gsm8k_data/train.jsonl"
+    data_path = "./datasets/gsm8k/train.jsonl"
     dataset = load_dataset('json', data_files={"train":data_path})['train']
 
     QAs = [{'Q':x, 'A':y.split('####')[-1].strip()} for x,y in zip(dataset['question'], dataset['answer'])]
@@ -208,6 +208,9 @@ def gen_worker(Q, physics_device):
         ans_logprob = torch.tensor(ans_logprob)
         answer_token_logprob = ans_logprob[token_indices]
         confidence = (answer_token_logprob[:, 0] - answer_token_logprob[:, 1]).mean()
+
+        confidence = 0.1 if confidence < 0 else confidence
+
         return confidence
 
     def reward_format(item, answer):

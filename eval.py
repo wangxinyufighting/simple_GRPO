@@ -35,9 +35,8 @@ def extract_answer_from_model_output(text):
     answer = last_part.split("</answer>")[0].strip()
     return None if answer == "..." else answer
 
-def prepare_dataset(data_name='gsm8k', split="train"):
-    #    data = load_dataset('openai/gsm8k', 'main')[split]
-    data = load_dataset('json', data_files={split:f'../cot_decoding/data/{data_name}/{split}.jsonl'})[split]
+def prepare_dataset(data_path, split="train"):
+    data = load_dataset('json', data_files={split:data_path})[split]
     formatted_data = []
     for example in data:
         # Convert list of messages to a single string prompt.
@@ -142,11 +141,7 @@ def reward_correct(gt, answer):
         return 0
 
 
-
-
 if __name__ == '__main__':
-    
-
     args = get_args()
     data_path = args.data_path
     batch_size = args.batch_size
@@ -158,8 +153,8 @@ if __name__ == '__main__':
                 torch_dtype=torch.bfloat16, _attn_implementation="sdpa").to('cuda')
     tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side='left')
 
-    test_data = prepare_dataset(split="test")
+    test_data = prepare_dataset(args.data_path, split="test")
     after_grpo_accuracy = evaluate_model(model, tokenizer, test_data, max_new_tokens=max_new_tokens, batch_size=batch_size)
 
-    with open('./result_og.txt', 'a') as f:
+    with open(f'./result.txt', 'a') as f:
         f.write(f'{model_path}\t{after_grpo_accuracy}\n')
