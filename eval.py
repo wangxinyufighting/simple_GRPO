@@ -157,4 +157,4 @@ if __name__ == '__main__':
     after_grpo_accuracy = evaluate_model(model, tokenizer, test_data, max_new_tokens=max_new_tokens, batch_size=batch_size)
 
     with open(f'./result.txt', 'a') as f:
-        f.write(f'{model_path}\t{after_grpo_accuracy}\n')
+        f.write(f'{model_path}\t{after_grpo_accuracy}\t{batch_size}\t{max_new_tokens}\t{data_path}\n')
