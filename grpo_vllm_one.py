@@ -190,6 +190,8 @@ def gen_worker(Q, physics_device):
         if not token_indices:
             return None, None, None
 
+        token_indices = [i-1 for i in token_indices]
+
         return last_num_str, (start_idx, end_idx), token_indices
     
     def reward_correct(item, answer):
